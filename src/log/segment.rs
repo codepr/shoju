@@ -1,4 +1,4 @@
-use crate::record;
+use crate::log::record::Record;
 use byteorder::{NetworkEndian, ReadBytesExt, WriteBytesExt};
 use memmap::MmapOptions;
 use std::cmp::Ordering;
@@ -12,6 +12,7 @@ const OFFSET_THRESHOLD: u64 = 10;
 pub struct Segment {
     log_file: File,
     index_file: File,
+    pub starting_offset: u64,
     prev_offset: u64,
     last_offset: u64,
     active: bool,
@@ -46,7 +47,7 @@ impl IndexPosition {
 }
 
 impl Segment {
-    pub fn new(name: String) -> Result<Self> {
+    pub fn new(name: String, active: bool, starting_offset: u64) -> Result<Self> {
         let log_path = Path::new(LOG_PATH).join(format!("{}.log", &name));
         let idx_path = Path::new(LOG_PATH).join(format!("{}.index", &name));
         let log_file = File::options().read(true).write(true).open(log_path)?;
@@ -54,13 +55,21 @@ impl Segment {
         Ok(Self {
             log_file,
             index_file,
+            starting_offset,
             prev_offset: 0,
             last_offset: 0,
-            active: true,
+            active,
         })
     }
 
-    pub fn append_record(&mut self, record: record::Record) -> Result<()> {
+    pub fn seal(&mut self) -> Result<()> {
+        self.active = false;
+        self.log_file.sync_all()?;
+        self.index_file.sync_all()
+    }
+
+    pub fn append_record(&mut self, value: &[u8]) -> Result<()> {
+        let record = Record::new(self.last_offset + 1, value.to_vec());
         let mut writer = BufWriter::new(&self.log_file);
         record.write(&mut writer)?;
         self.last_offset += 1;
@@ -75,7 +84,7 @@ impl Segment {
         Ok(())
     }
 
-    pub fn read_at(&mut self, offset: u64) -> Result<record::Record> {
+    pub fn read_at(&mut self, offset: u64) -> Result<Record> {
         match self.read_index(offset as u32) {
             Ok(SearchResult::Single(index_position)) => {
                 let buffer_size = index_position.position as usize;
@@ -86,7 +95,7 @@ impl Segment {
                     .read_exact(&mut buf)
                     .expect("Error reading log file");
                 let mut reader = BufReader::new(&buf[..]);
-                let r = record::Record::from_binary(&mut reader)?;
+                let r = Record::from_binary(&mut reader)?;
                 Ok(r)
             }
             Ok(SearchResult::Range((index_position, next_position))) => {
@@ -98,11 +107,11 @@ impl Segment {
                 self.log_file
                     .read_exact(&mut buf)
                     .expect("Error reading log file");
-                let mut records: Vec<record::Record> = Vec::new();
+                let mut records: Vec<Record> = Vec::new();
                 let mut pointer = 0;
                 let mut reader = BufReader::new(&buf[..]);
                 while pointer < offset_count {
-                    let r = record::Record::from_binary(&mut reader)?;
+                    let r = Record::from_binary(&mut reader)?;
                     records.push(r);
                     pointer += 1;
                 }
