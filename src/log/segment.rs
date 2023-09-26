@@ -1,21 +1,21 @@
 use crate::log::record::Record;
 use byteorder::{NetworkEndian, ReadBytesExt, WriteBytesExt};
-use memmap::MmapOptions;
 use std::cmp::Ordering;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Result, Seek, SeekFrom, Write};
 use std::path::Path;
 
-const LOG_PATH: &str = "logdir";
 const OFFSET_THRESHOLD: u64 = 10;
 
+#[derive(Clone)]
 pub struct Segment {
-    log_file: File,
-    index_file: File,
+    log_file_path: String,
+    idx_file_path: String,
     pub starting_offset: u64,
     prev_offset: u64,
-    last_offset: u64,
+    pub last_offset: u64,
     active: bool,
+    size: usize,
 }
 
 enum SearchResult {
@@ -23,7 +23,7 @@ enum SearchResult {
     Range((IndexPosition, IndexPosition)),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct IndexPosition {
     offset: u32,
     position: u32,
@@ -47,69 +47,91 @@ impl IndexPosition {
 }
 
 impl Segment {
-    pub fn new(name: String, active: bool, starting_offset: u64) -> Result<Self> {
-        let log_path = Path::new(LOG_PATH).join(format!("{}.log", &name));
-        let idx_path = Path::new(LOG_PATH).join(format!("{}.index", &name));
-        let log_file = File::options().read(true).write(true).open(log_path)?;
-        let index_file = File::options().read(true).write(true).open(idx_path)?;
+    pub fn new(basedir: &str, active: bool, starting_offset: u64) -> Result<Self> {
+        let (log_path_str, idx_path_str) = Segment::path_strs(basedir, starting_offset);
+
         Ok(Self {
-            log_file,
-            index_file,
+            log_file_path: log_path_str,
+            idx_file_path: idx_path_str,
             starting_offset,
-            prev_offset: 0,
-            last_offset: 0,
+            prev_offset: starting_offset,
+            last_offset: starting_offset,
             active,
+            size: 0,
         })
     }
 
-    pub fn seal(&mut self) -> Result<()> {
+    pub fn from_disk(basedir: &str, active: bool, starting_offset: u64) -> Result<Self> {
+        let (log_path_str, idx_path_str) = Segment::path_strs(basedir, starting_offset);
+        let log_file = File::options().read(true).open(&log_path_str)?;
+        let mut reader = BufReader::new(&log_file);
+        let mut counter = 0;
+        loop {
+            match Record::from_binary(&mut reader) {
+                Ok(_r) => counter += 1,
+                Err(_) => break,
+            }
+        }
+        let log_size = log_file.metadata().unwrap().len();
+        let (prev_offset, last_offset) = match counter {
+            0 => (0, 0),
+            n if n < OFFSET_THRESHOLD => (n, n + 1),
+            n if n % OFFSET_THRESHOLD == 0 => (n - OFFSET_THRESHOLD, n + 1),
+            n => (n - (n % OFFSET_THRESHOLD), n + 1),
+        };
+        Ok(Self {
+            log_file_path: log_path_str,
+            idx_file_path: idx_path_str,
+            starting_offset,
+            prev_offset,
+            last_offset,
+            active,
+            size: log_size as usize,
+        })
+    }
+
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    pub fn seal(&mut self) {
         self.active = false;
-        self.log_file.sync_all()?;
-        self.index_file.sync_all()
     }
 
     pub fn append_record(&mut self, value: &[u8]) -> Result<()> {
-        let record = Record::new(self.last_offset + 1, value.to_vec());
-        let mut writer = BufWriter::new(&self.log_file);
-        record.write(&mut writer)?;
+        let record = Record::new(self.last_offset, value.to_vec());
+        let log_file = File::options().append(true).open(&self.log_file_path)?;
+        let mut writer = BufWriter::new(log_file);
+        let record_bytes = record.write(&mut writer)?;
         self.last_offset += 1;
         if self.last_offset - self.prev_offset >= OFFSET_THRESHOLD {
-            let offset = writer.seek(SeekFrom::Current(0))?;
-            println!("OFFSET: {} - POSITION: {}", self.last_offset, offset);
-            let mut idx_writer = BufWriter::new(&self.index_file);
+            let offset = self.size;
+            let index_file = File::options().append(true).open(&self.idx_file_path)?;
+            let mut idx_writer = BufWriter::new(index_file);
             let index_position = IndexPosition::new(self.last_offset as u32, offset as u32);
             index_position.write(&mut idx_writer)?;
             self.prev_offset = self.last_offset;
         }
+        self.size += record_bytes;
         Ok(())
     }
 
     pub fn read_at(&mut self, offset: u64) -> Result<Record> {
         match self.read_index(offset as u32) {
             Ok(SearchResult::Single(index_position)) => {
-                let buffer_size = index_position.position as usize;
-                let mut buf = vec![0u8; buffer_size];
-                self.log_file
-                    .seek(SeekFrom::Start(index_position.position as u64))?;
-                self.log_file
-                    .read_exact(&mut buf)
-                    .expect("Error reading log file");
-                let mut reader = BufReader::new(&buf[..]);
+                let mut log_file = File::options().read(true).open(&self.log_file_path)?;
+                log_file.seek(SeekFrom::Start(index_position.position as u64))?;
+                let mut reader = BufReader::new(log_file);
                 let r = Record::from_binary(&mut reader)?;
                 Ok(r)
             }
             Ok(SearchResult::Range((index_position, next_position))) => {
-                let buffer_size = (next_position.position - index_position.position) as usize;
                 let offset_count = next_position.offset - index_position.offset;
-                let mut buf = vec![0u8; buffer_size];
-                self.log_file
-                    .seek(SeekFrom::Start(index_position.position as u64))?;
-                self.log_file
-                    .read_exact(&mut buf)
-                    .expect("Error reading log file");
+                let mut log_file = File::options().read(true).open(&self.log_file_path)?;
+                log_file.seek(SeekFrom::Start(index_position.position as u64))?;
                 let mut records: Vec<Record> = Vec::new();
                 let mut pointer = 0;
-                let mut reader = BufReader::new(&buf[..]);
+                let mut reader = BufReader::new(&log_file);
                 while pointer < offset_count {
                     let r = Record::from_binary(&mut reader)?;
                     records.push(r);
@@ -126,8 +148,10 @@ impl Segment {
     }
 
     fn read_index(&self, offset: u32) -> Result<SearchResult> {
-        let mmap = unsafe { MmapOptions::new().map(&self.index_file)? };
-        let positions: Vec<IndexPosition> = mmap
+        let mut idx_file = File::options().read(true).open(&self.idx_file_path)?;
+        let mut buffer = Vec::new();
+        idx_file.read_to_end(&mut buffer)?;
+        let positions: Vec<IndexPosition> = buffer
             .chunks(8)
             .map(|mut c| IndexPosition::from_binary(&mut c).unwrap())
             .collect();
@@ -140,14 +164,57 @@ impl Segment {
                 Ok(SearchResult::Single(*index_position))
             }
             Err(0) => {
-                let index_position = &positions[0];
-                Ok(SearchResult::Single(*index_position))
+                let next_position = &positions[0];
+                Ok(SearchResult::Range((
+                    IndexPosition::new(0, 0),
+                    *next_position,
+                )))
             }
             Err(off) => {
                 let index_position = &positions[off - 1];
-                let next_position = &positions[off];
-                Ok(SearchResult::Range((*index_position, *next_position)))
+                if offset as u64 % OFFSET_THRESHOLD == 0 {
+                    Ok(SearchResult::Single(*index_position))
+                } else {
+                    let next_position = &positions[off];
+                    Ok(SearchResult::Range((*index_position, *next_position)))
+                }
             }
         }
+    }
+
+    fn path_strs(basedir: &str, starting_offset: u64) -> (String, String) {
+        let log_path = Path::new(basedir).join(format!("{:020}.log", &starting_offset));
+        let idx_path = Path::new(basedir).join(format!("{:020}.index", &starting_offset));
+        let log_path_str = log_path.into_os_string().into_string().unwrap();
+        let idx_path_str = idx_path.to_str().unwrap().to_owned();
+        (log_path_str, idx_path_str)
+    }
+}
+
+#[cfg(test)]
+mod index_position_tests {
+    use super::IndexPosition;
+    use std::io::BufReader;
+
+    #[test]
+    fn test_new() {
+        let idx_position = IndexPosition::new(0, 0);
+        assert_eq!(
+            idx_position,
+            IndexPosition {
+                offset: 0,
+                position: 0
+            }
+        );
+    }
+
+    #[test]
+    fn test_write() {
+        let idx_position = IndexPosition::new(0, 0);
+        let mut buffer = vec![];
+        idx_position.write(&mut buffer).unwrap();
+        let mut reader = BufReader::new(&buffer[..]);
+        let expected = IndexPosition::from_binary(&mut reader).unwrap();
+        assert_eq!(idx_position, expected,);
     }
 }

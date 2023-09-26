@@ -2,6 +2,7 @@ use byteorder::{NetworkEndian, ReadBytesExt, WriteBytesExt};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use std::fmt;
 use std::io::{self, Read, Write};
+use std::mem::size_of;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Record {
@@ -37,11 +38,12 @@ impl Record {
         }
     }
 
-    pub fn write(&self, buf: &mut impl Write) -> io::Result<()> {
+    pub fn write(&self, buf: &mut impl Write) -> io::Result<usize> {
         buf.write_u64::<NetworkEndian>(self.offset)?;
         buf.write_u128::<NetworkEndian>(self.timestamp)?;
         buf.write_u32::<NetworkEndian>(self.value.len() as u32)?;
-        buf.write_all(&self.value)
+        buf.write_all(&self.value)?;
+        Ok(size_of::<u64>() + size_of::<u128>() + size_of::<u32>() + self.value.len())
     }
 
     pub fn from_binary(buf: &mut impl Read) -> io::Result<Self> {

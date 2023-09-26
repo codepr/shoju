@@ -1,12 +1,13 @@
 use crate::log::record::Record;
 use crate::log::segment::Segment;
+use crate::log::LOG_PATH;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fs;
 use std::io::Result;
 use std::path::Path;
 
-const LOG_PATH: &str = "logdir";
+const SIZE_THRESHOLD: usize = 524288;
 
 pub struct Partition {
     sealed_segments: Vec<Segment>,
@@ -39,16 +40,23 @@ impl Partition {
             .into_iter()
             .map(|name| {
                 let starting_offset = name.parse::<u64>().expect("Log file name not compliant");
-                Segment::new(name.to_string(), false, starting_offset).unwrap()
+                Segment::from_disk(LOG_PATH, false, starting_offset).unwrap()
             })
             .collect();
         Ok(Partition {
             sealed_segments,
-            active_segment: Segment::new(head.to_string(), true, head_start_offset)?,
+            active_segment: Segment::from_disk(LOG_PATH, true, head_start_offset)?,
         })
     }
 
     pub fn append_record(&mut self, value: &[u8]) -> Result<()> {
+        if self.active_segment.size() >= SIZE_THRESHOLD {
+            let last_offset = self.active_segment.last_offset;
+            let new_segment = Segment::new(LOG_PATH, true, last_offset + 1)?;
+            self.active_segment.seal();
+            self.sealed_segments.push(self.active_segment.clone());
+            self.active_segment = new_segment;
+        }
         self.active_segment.append_record(value)
     }
 
