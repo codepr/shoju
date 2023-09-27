@@ -1,3 +1,8 @@
+//! An event record, represents an unique information in a precise point in time
+//!
+//! A `Record` is formed by an offset, a timestamp and the content information
+//! defininng the event. An event can be appended to a segment and persisted in a log file. It's
+//! the smallest abstractiion in the system.
 use byteorder::{NetworkEndian, ReadBytesExt, WriteBytesExt};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use std::fmt;
@@ -7,8 +12,8 @@ use std::mem::size_of;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Record {
     pub offset: u64,
-    timestamp: u128,
-    value: Vec<u8>,
+    pub timestamp: u128,
+    pub value: Vec<u8>,
 }
 
 impl fmt::Display for Record {
@@ -16,7 +21,7 @@ impl fmt::Display for Record {
         let ts_secs = self.timestamp / 1000;
         let ts_ns = (self.timestamp % 1000) * 1_000_000;
         let dt = DateTime::<Utc>::from_naive_utc_and_offset(
-            NaiveDateTime::from_timestamp(ts_secs.try_into().unwrap(), ts_ns as u32),
+            NaiveDateTime::from_timestamp_opt(ts_secs.try_into().unwrap(), ts_ns as u32).unwrap(),
             Utc,
         );
         write!(
@@ -38,12 +43,16 @@ impl Record {
         }
     }
 
+    pub fn binary_size(&self) -> usize {
+        size_of::<u64>() + size_of::<u128>() + size_of::<u32>() + self.value.len()
+    }
+
     pub fn write(&self, buf: &mut impl Write) -> io::Result<usize> {
         buf.write_u64::<NetworkEndian>(self.offset)?;
         buf.write_u128::<NetworkEndian>(self.timestamp)?;
         buf.write_u32::<NetworkEndian>(self.value.len() as u32)?;
         buf.write_all(&self.value)?;
-        Ok(size_of::<u64>() + size_of::<u128>() + size_of::<u32>() + self.value.len())
+        Ok(self.binary_size())
     }
 
     pub fn from_binary(buf: &mut impl Read) -> io::Result<Self> {
@@ -73,6 +82,12 @@ mod record_tests {
             record.value,
             &[116, 101, 115, 116, 95, 118, 97, 108, 117, 101]
         );
+    }
+
+    #[test]
+    fn test_binary_size() {
+        let record = Record::new(0, "test_value".into());
+        assert_eq!(record.binary_size(), 38);
     }
 
     #[test]

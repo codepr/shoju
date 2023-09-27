@@ -11,7 +11,7 @@ fn main() -> std::io::Result<()> {
     println!("Record: {}", record);
     let record = partition.find_record(14).expect("Failed look up");
     println!("Record: {}", record);
-    let record = partition.find_record(130).expect("Failed look up");
+    let record = partition.find_record(163).expect("Failed look up");
     println!("Record: {}", record);
 
     Ok(())

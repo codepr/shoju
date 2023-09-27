@@ -7,7 +7,7 @@ use std::path::Path;
 
 const OFFSET_THRESHOLD: u64 = 10;
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Segment {
     log_file_path: String,
     idx_file_path: String,
@@ -100,18 +100,25 @@ impl Segment {
 
     pub fn append_record(&mut self, value: &[u8]) -> Result<()> {
         let record = Record::new(self.last_offset, value.to_vec());
-        let log_file = File::options().append(true).open(&self.log_file_path)?;
+        let log_file = File::options()
+            .append(true)
+            .create(true)
+            .open(&self.log_file_path)?;
         let mut writer = BufWriter::new(log_file);
         let record_bytes = record.write(&mut writer)?;
         self.last_offset += 1;
         if self.last_offset - self.prev_offset >= OFFSET_THRESHOLD {
             let offset = self.size;
-            let index_file = File::options().append(true).open(&self.idx_file_path)?;
+            let index_file = File::options()
+                .append(true)
+                .create(true)
+                .open(&self.idx_file_path)?;
             let mut idx_writer = BufWriter::new(index_file);
             let index_position = IndexPosition::new(self.last_offset as u32, offset as u32);
             index_position.write(&mut idx_writer)?;
             self.prev_offset = self.last_offset;
         }
+        writer.flush()?;
         self.size += record_bytes;
         Ok(())
     }
@@ -122,20 +129,31 @@ impl Segment {
                 let mut log_file = File::options().read(true).open(&self.log_file_path)?;
                 log_file.seek(SeekFrom::Start(index_position.position as u64))?;
                 let mut reader = BufReader::new(log_file);
-                let r = Record::from_binary(&mut reader)?;
-                Ok(r)
+                let mut record = Record::from_binary(&mut reader)?;
+                if record.offset == offset {
+                    Ok(record)
+                } else {
+                    let mut remaining_bytes =
+                        self.size - index_position.position as usize - record.binary_size();
+                    let mut stop = false;
+                    while remaining_bytes > 0 || stop == false {
+                        record = Record::from_binary(&mut reader)?;
+                        remaining_bytes -= record.binary_size();
+                        stop = record.offset == offset;
+                    }
+                    Ok(record)
+                }
             }
             Ok(SearchResult::Range((index_position, next_position))) => {
-                let offset_count = next_position.offset - index_position.offset;
+                let mut offset_count = next_position.offset - index_position.offset;
                 let mut log_file = File::options().read(true).open(&self.log_file_path)?;
                 log_file.seek(SeekFrom::Start(index_position.position as u64))?;
                 let mut records: Vec<Record> = Vec::new();
-                let mut pointer = 0;
                 let mut reader = BufReader::new(&log_file);
-                while pointer < offset_count {
+                while offset_count > 0 {
                     let r = Record::from_binary(&mut reader)?;
                     records.push(r);
-                    pointer += 1;
+                    offset_count -= 1;
                 }
                 let result_record = records.binary_search_by(|probe| probe.offset.cmp(&offset));
                 match result_record {
@@ -172,7 +190,7 @@ impl Segment {
             }
             Err(off) => {
                 let index_position = &positions[off - 1];
-                if offset as u64 % OFFSET_THRESHOLD == 0 {
+                if offset as u64 % OFFSET_THRESHOLD == 0 || off == positions.len() {
                     Ok(SearchResult::Single(*index_position))
                 } else {
                     let next_position = &positions[off];
@@ -216,5 +234,51 @@ mod index_position_tests {
         let mut reader = BufReader::new(&buffer[..]);
         let expected = IndexPosition::from_binary(&mut reader).unwrap();
         assert_eq!(idx_position, expected,);
+    }
+}
+
+#[cfg(test)]
+mod segment_tests {
+    use super::Segment;
+    use std::fs::File;
+    use tempdir::TempDir;
+
+    #[test]
+    fn test_new() {
+        let segment = Segment::new("basedir", true, 0).unwrap();
+        assert_eq!(
+            segment,
+            Segment {
+                log_file_path: "basedir/00000000000000000000.log".to_string(),
+                idx_file_path: "basedir/00000000000000000000.index".to_string(),
+                starting_offset: 0,
+                prev_offset: 0,
+                last_offset: 0,
+                active: true,
+                size: 0
+            }
+        );
+    }
+
+    #[test]
+    fn test_append_record_read_at() {
+        let temp_dir = TempDir::new("test_tempdir").unwrap();
+        let mut segment = Segment::new(temp_dir.path().to_str().unwrap(), true, 0).unwrap();
+        for i in 0..15 {
+            segment.append_record(&[i, 0, 0]).unwrap();
+        }
+        let temp_log_file = File::open(temp_dir.path().join("00000000000000000000.log")).unwrap();
+        let temp_idx_file = File::open(temp_dir.path().join("00000000000000000000.index")).unwrap();
+        let log_len = temp_log_file.metadata().unwrap().len();
+        let idx_len = temp_idx_file.metadata().unwrap().len();
+        assert_eq!(log_len, 465);
+        assert_eq!(idx_len, 8);
+        let record = segment.read_at(0).unwrap();
+        assert_eq!(record.offset, 0);
+        let record = segment.read_at(14).unwrap();
+        assert_eq!(record.offset, 14);
+        drop(temp_log_file);
+        drop(temp_idx_file);
+        temp_dir.close().unwrap();
     }
 }
