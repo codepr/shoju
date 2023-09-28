@@ -136,7 +136,7 @@ impl Segment {
                     let mut remaining_bytes =
                         self.size - index_position.position as usize - record.binary_size();
                     let mut stop = false;
-                    while remaining_bytes > 0 || stop == false {
+                    while remaining_bytes > 0 && stop == false {
                         record = Record::from_binary(&mut reader)?;
                         remaining_bytes -= record.binary_size();
                         stop = record.offset == offset;
@@ -155,7 +155,7 @@ impl Segment {
                     records.push(r);
                     offset_count -= 1;
                 }
-                let result_record = records.binary_search_by(|probe| probe.offset.cmp(&offset));
+                let result_record = records.binary_search_by(|s| s.offset.cmp(&offset));
                 match result_record {
                     Ok(i) => Ok(records[i].clone()),
                     Err(n) => panic!("Offset not found: {}", n),
@@ -173,9 +173,7 @@ impl Segment {
             .chunks(8)
             .map(|mut c| IndexPosition::from_binary(&mut c).unwrap())
             .collect();
-
-        let position =
-            positions.binary_search_by(|probe| probe.offset.cmp(&offset).then(Ordering::Less));
+        let position = positions.binary_search_by(|p| p.offset.cmp(&offset).then(Ordering::Less));
         match position {
             Ok(pos) => {
                 let index_position = &positions[pos];
