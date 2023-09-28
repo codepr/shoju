@@ -4,7 +4,7 @@ fn main() -> std::io::Result<()> {
     let mut partition = Partition::init()?;
     // for _i in 0..1055 {
     //     partition
-    //         .append_record(&[0, 0, 1, 0])
+    //         .append_record(Some("key".into()), &[0, 0, 1, 0])
     //         .expect("Error writing to disk");
     // }
     let record = partition.find_record(0).expect("Failed look up");

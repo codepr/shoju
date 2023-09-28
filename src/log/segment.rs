@@ -98,8 +98,8 @@ impl Segment {
         self.active = false;
     }
 
-    pub fn append_record(&mut self, value: &[u8]) -> Result<()> {
-        let record = Record::new(self.last_offset, value.to_vec());
+    pub fn append_record(&mut self, key: Option<Vec<u8>>, value: &[u8]) -> Result<()> {
+        let record = Record::new(self.last_offset, key, value.to_vec());
         let log_file = File::options()
             .append(true)
             .create(true)
@@ -173,6 +173,7 @@ impl Segment {
             .chunks(8)
             .map(|mut c| IndexPosition::from_binary(&mut c).unwrap())
             .collect();
+
         let position = positions.binary_search_by(|p| p.offset.cmp(&offset).then(Ordering::Less));
         match position {
             Ok(pos) => {
@@ -182,7 +183,7 @@ impl Segment {
             Err(0) => {
                 let next_position = &positions[0];
                 Ok(SearchResult::Range((
-                    IndexPosition::new(0, 0),
+                    IndexPosition::new(next_position.offset - OFFSET_THRESHOLD as u32, 0),
                     *next_position,
                 )))
             }
@@ -263,13 +264,15 @@ mod segment_tests {
         let temp_dir = TempDir::new("test_tempdir").unwrap();
         let mut segment = Segment::new(temp_dir.path().to_str().unwrap(), true, 0).unwrap();
         for i in 0..15 {
-            segment.append_record(&[i, 0, 0]).unwrap();
+            segment
+                .append_record(Some("key".into()), &[i, 0, 0])
+                .unwrap();
         }
         let temp_log_file = File::open(temp_dir.path().join("00000000000000000000.log")).unwrap();
         let temp_idx_file = File::open(temp_dir.path().join("00000000000000000000.index")).unwrap();
         let log_len = temp_log_file.metadata().unwrap().len();
         let idx_len = temp_idx_file.metadata().unwrap().len();
-        assert_eq!(log_len, 465);
+        assert_eq!(log_len, 570);
         assert_eq!(idx_len, 8);
         let record = segment.read_at(0).unwrap();
         assert_eq!(record.offset, 0);

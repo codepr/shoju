@@ -56,7 +56,7 @@ impl Partition {
         }
     }
 
-    pub fn append_record(&mut self, value: &[u8]) -> Result<()> {
+    pub fn append_record(&mut self, key: Option<Vec<u8>>, value: &[u8]) -> Result<()> {
         if self.active_segment.size() >= SIZE_THRESHOLD {
             let last_offset = self.active_segment.last_offset;
             let new_segment = Segment::new(LOG_PATH, true, last_offset)?;
@@ -64,7 +64,7 @@ impl Partition {
             self.sealed_segments.push(self.active_segment.clone());
             self.active_segment = new_segment;
         }
-        self.active_segment.append_record(value)
+        self.active_segment.append_record(key, value)
     }
 
     pub fn find_record(&mut self, offset: u64) -> Result<Record> {
