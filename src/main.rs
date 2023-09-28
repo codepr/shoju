@@ -1,28 +1,32 @@
 use shoju::log::partition::Partition;
 
+mod smoke_test {
+    use shoju::log::partition::Partition;
+    pub fn generate_partition(n: i32) -> std::io::Result<()> {
+        let mut partition = Partition::init()?;
+        for _i in 0..n {
+            partition
+                .append_record(Some("key".into()), &[0, 0, 1, 0])
+                .expect("Error writing to disk");
+        }
+        Ok(())
+    }
+
+    pub fn replay_log(partition: &mut Partition, offsets: &[u64]) {
+        for offset in offsets.iter() {
+            let r = partition
+                .find_record(*offset)
+                .expect(&format!("Failed lookup {}", offset));
+            println!("{}", r);
+        }
+    }
+}
+
 fn main() -> std::io::Result<()> {
     let mut partition = Partition::init()?;
-    // for _i in 0..1055 {
-    //     partition
-    //         .append_record(Some("key".into()), &[0, 0, 1, 0])
-    //         .expect("Error writing to disk");
-    // }
-    let record = partition.find_record(0).expect("Failed look up");
-    println!("Record: {}", record);
-    let record = partition.find_record(14).expect("Failed look up 14");
-    println!("Record: {}", record);
-    let record = partition.find_record(163).expect("Failed look up 163");
-    println!("Record: {}", record);
-    let record = partition.find_record(563).expect("Failed look up 563");
-    println!("Record: {}", record);
-    let record = partition.find_record(957).expect("Failed look up 957");
-    println!("Record: {}", record);
-    let record = partition.find_record(980).expect("Failed look up 980");
-    println!("Record: {}", record);
-    let record = partition.find_record(1010).expect("Failed look up 1010");
-    println!("Record: {}", record);
-    let record = partition.find_record(1400).expect("Failed look up 1400");
-    println!("Record: {}", record);
-
+    smoke_test::replay_log(
+        &mut partition,
+        &[0, 14, 163, 400, 499, 563, 957, 980, 1010, 1400],
+    );
     Ok(())
 }

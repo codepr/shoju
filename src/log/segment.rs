@@ -65,15 +65,19 @@ impl Segment {
         let (log_path_str, idx_path_str) = Segment::path_strs(basedir, starting_offset);
         let log_file = File::options().read(true).open(&log_path_str)?;
         let mut reader = BufReader::new(&log_file);
-        let mut counter = 0;
+        let mut record_count = 0;
+        // We read all the records from the log file till EOF and count them.
+        //
+        // TODO read the index file last offset and read only the remaining bytes from
+        // the log file.
         loop {
             match Record::from_binary(&mut reader) {
-                Ok(_r) => counter += 1,
+                Ok(_r) => record_count += 1,
                 Err(_) => break,
             }
         }
         let log_size = log_file.metadata().unwrap().len();
-        let (prev_offset, last_offset) = match counter {
+        let (prev_offset, last_offset) = match record_count {
             0 => (0, 0),
             n if n < OFFSET_THRESHOLD => (n, n + 1),
             n if n % OFFSET_THRESHOLD == 0 => (n - OFFSET_THRESHOLD, n + 1),
