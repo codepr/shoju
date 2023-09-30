@@ -206,7 +206,7 @@ impl Segment {
     fn path_strs(basedir: &str, starting_offset: u64) -> (String, String) {
         let log_path = Path::new(basedir).join(format!("{:020}.log", &starting_offset));
         let idx_path = Path::new(basedir).join(format!("{:020}.index", &starting_offset));
-        let log_path_str = log_path.into_os_string().into_string().unwrap();
+        let log_path_str = log_path.to_str().unwrap().to_owned();
         let idx_path_str = idx_path.to_str().unwrap().to_owned();
         (log_path_str, idx_path_str)
     }
