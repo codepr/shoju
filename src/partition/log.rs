@@ -41,7 +41,7 @@ impl Log {
             .create(false)
             .append(true)
             .open(path.join(format!("{:020}.log", base_offset)))?;
-        let log_size = file.metadata().unwrap().len();
+        let mut log_size = 0;
         let mut record_count = 0;
         let mut reader = BufReader::new(&file);
         // We read all the records from the log file till EOF and count them.
@@ -50,7 +50,10 @@ impl Log {
         // the log file.
         loop {
             match Record::from_binary(&mut reader) {
-                Ok(_r) => record_count += 1,
+                Ok(r) => {
+                    log_size += r.binary_size();
+                    record_count += 1;
+                }
                 Err(_) => break,
             }
         }

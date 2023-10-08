@@ -29,7 +29,7 @@ impl Segment {
     ) -> std::io::Result<Self> {
         let path = Path::new(base_dir).to_path_buf();
         let log = Log::new(&path, base_offset, LOG_MAX_SIZE)?;
-        let index = Index::new(&path, base_offset, offset_interval)?;
+        let index = Index::new(&path, base_offset, offset_interval, LOG_MAX_SIZE / 2)?;
         Ok(Self {
             log,
             index,
@@ -48,7 +48,8 @@ impl Segment {
     ) -> std::io::Result<Self> {
         let path = Path::new(base_dir).to_path_buf();
         let log = Log::load_from_disk(&path, base_offset, LOG_MAX_SIZE)?;
-        let prev_offset = match log.current_offset {
+        let latest_offset = log.current_offset;
+        let prev_offset = match latest_offset {
             0 => 0,
             n if n < offset_interval as u64 => n,
             n if n % offset_interval as u64 == 0 => n - offset_interval as u64,
@@ -56,7 +57,13 @@ impl Segment {
         };
         Ok(Self {
             log,
-            index: Index::load_from_disk(&path, base_offset, offset_interval)?,
+            index: Index::load_from_disk(
+                &path,
+                base_offset,
+                latest_offset,
+                offset_interval,
+                LOG_MAX_SIZE / 2,
+            )?,
             base_offset,
             prev_offset,
             offset_interval,

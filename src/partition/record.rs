@@ -5,9 +5,25 @@
 //! the smallest abstractiion in the system.
 use byteorder::{NetworkEndian, ReadBytesExt, WriteBytesExt};
 use chrono::{DateTime, NaiveDateTime, Utc};
+use std::error::Error;
 use std::fmt;
-use std::io::{self, Read, Write};
+use std::io::{self, Error as IOError, ErrorKind, Read, Write};
 use std::mem::size_of;
+
+const MAGIC_BYTE: u8 = 35;
+
+#[derive(Debug)]
+pub enum RecordError {
+    MissingMagicByte,
+}
+
+impl Error for RecordError {}
+
+impl fmt::Display for RecordError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Missing magic byte")
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Record {
@@ -46,7 +62,8 @@ impl Record {
     }
 
     pub fn binary_size(&self) -> usize {
-        size_of::<u64>()
+        size_of::<u8>()
+            + size_of::<u64>()
             + size_of::<u128>()
             + size_of::<u32>()
             + self.value.len()
@@ -55,6 +72,7 @@ impl Record {
     }
 
     pub fn write(&self, buf: &mut impl Write) -> io::Result<usize> {
+        buf.write_u8(MAGIC_BYTE)?;
         buf.write_u64::<NetworkEndian>(self.offset)?;
         buf.write_u128::<NetworkEndian>(self.timestamp)?;
         match &self.key {
@@ -70,6 +88,13 @@ impl Record {
     }
 
     pub fn from_binary(buf: &mut impl Read) -> io::Result<Self> {
+        let magic_byte = buf.read_u8()?;
+        if magic_byte != MAGIC_BYTE {
+            return Err(IOError::new(
+                ErrorKind::Other,
+                RecordError::MissingMagicByte,
+            ));
+        }
         let offset = buf.read_u64::<NetworkEndian>()?;
         let timestamp = buf.read_u128::<NetworkEndian>()?;
         let key_size = buf.read_u32::<NetworkEndian>()?;
@@ -110,7 +135,7 @@ mod record_tests {
     #[test]
     fn test_binary_size() {
         let record = Record::new(0, Some("test_key".into()), "test_value".into());
-        assert_eq!(record.binary_size(), 50);
+        assert_eq!(record.binary_size(), 51);
     }
 
     #[test]

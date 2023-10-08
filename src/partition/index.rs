@@ -1,7 +1,6 @@
 use byteorder::{NetworkEndian, ReadBytesExt, WriteBytesExt};
-use memmap2::MmapOptions;
+use memmap2::MmapMut;
 use std::fs::{File, OpenOptions};
-use std::io::BufWriter;
 use std::io::{Read, Result, Write};
 use std::path::PathBuf;
 
@@ -10,6 +9,7 @@ const ENTRY_SIZE: usize = 8;
 #[derive(Debug)]
 pub struct Index {
     file: File,
+    mmap: MmapMut,
     size: usize,
     base_offset: u64,
     offset_interval: usize,
@@ -57,15 +57,24 @@ impl OffsetRange {
 }
 
 impl Index {
-    pub fn new(path: &PathBuf, base_offset: u64, offset_interval: usize) -> Result<Self> {
+    pub fn new(
+        path: &PathBuf,
+        base_offset: u64,
+        offset_interval: usize,
+        max_size: usize,
+    ) -> Result<Self> {
         let file = OpenOptions::new()
             .read(true)
             .append(true)
             .create(true)
             .open(path.join(format!("{:020}.index", base_offset)))?;
 
+        file.set_len(max_size as u64)?;
+        let mmap = unsafe { MmapMut::map_mut(&file)? };
+
         Ok(Self {
             file,
+            mmap,
             size: 0,
             base_offset,
             offset_interval,
@@ -75,16 +84,22 @@ impl Index {
     pub fn load_from_disk(
         path: &PathBuf,
         base_offset: u64,
+        latest_offset: u64,
         offset_interval: usize,
+        max_size: usize,
     ) -> Result<Self> {
         let file = OpenOptions::new()
             .read(true)
             .create(false)
             .append(true)
             .open(path.join(format!("{:020}.index", base_offset)))?;
-        let size = file.metadata().unwrap().len();
+        file.set_len(max_size as u64)?;
+        let mmap = unsafe { MmapMut::map_mut(&file)? };
+        let size = ((latest_offset - base_offset) / offset_interval as u64) * ENTRY_SIZE as u64;
+
         Ok(Self {
             file,
+            mmap,
             size: size as usize,
             base_offset,
             offset_interval,
@@ -92,14 +107,15 @@ impl Index {
     }
 
     pub fn flush(&mut self) -> Result<()> {
-        self.file.flush()
+        self.mmap.flush_async()
     }
 
     pub fn append_position(&mut self, offset: u32, log_size: u32) -> Result<()> {
         let relative_offset = offset as u64 - self.base_offset;
         let new_row = Position::new(relative_offset as u32, log_size);
-        let mut writer = BufWriter::new(&self.file);
-        new_row.write(&mut writer)?;
+        let mut buffer = Vec::with_capacity(ENTRY_SIZE);
+        new_row.write(&mut buffer)?;
+        (&mut self.mmap[self.size..self.size + ENTRY_SIZE]).write(&buffer)?;
         self.size += ENTRY_SIZE;
         Ok(())
     }
@@ -122,8 +138,8 @@ impl Index {
             self.size
         };
 
-        let mmap = unsafe { MmapOptions::new().map(&self.file)? };
-        let positions: Vec<Position> = mmap[starting_offset..end_offset]
+        // let mmap = unsafe { MmapOptions::new().map(&self.file)? };
+        let positions: Vec<Position> = self.mmap[starting_offset..end_offset]
             .chunks(ENTRY_SIZE)
             .map(|mut c| Position::from_binary(&mut c).unwrap())
             .collect();
@@ -181,7 +197,7 @@ mod index_tests {
         let tmp_dir = TempDir::new("test_tempdir").unwrap();
         let expected_file = tmp_dir.path().join("00000000000000000000.index");
 
-        let index = Index::new(&tmp_dir.path().to_path_buf(), 0, 10).unwrap();
+        let index = Index::new(&tmp_dir.path().to_path_buf(), 0, 10, 256).unwrap();
 
         assert!(expected_file.as_path().exists());
         assert_eq!(index.base_offset, 0);
@@ -196,19 +212,19 @@ mod index_tests {
         let expected_file = tmp_dir.path().join("00000000000000000048.index");
         fs::File::create(&expected_file).unwrap();
 
-        let index = Index::load_from_disk(&tmp_dir.path().to_path_buf(), 48, 10).unwrap();
+        let index = Index::load_from_disk(&tmp_dir.path().to_path_buf(), 48, 68, 10, 256).unwrap();
 
         assert!(expected_file.as_path().exists());
         assert_eq!(index.base_offset, 48);
         assert_eq!(index.offset_interval, 10);
-        assert_eq!(index.size, 0);
+        assert_eq!(index.size, 16);
         tmp_dir.close().unwrap();
     }
 
     #[test]
     #[should_panic]
     fn test_invalid_load_from_disk() {
-        Index::new(&Path::new("dont-exist-dir").to_path_buf(), 0, 10).unwrap();
+        Index::new(&Path::new("dont-exist-dir").to_path_buf(), 0, 10, 256).unwrap();
     }
 
     #[test]
@@ -217,14 +233,14 @@ mod index_tests {
         let expected_file = tmp_dir.path().join("00000000000000000000.index");
         fs::File::create(&expected_file).unwrap();
 
-        let mut index = Index::new(&tmp_dir.path().to_path_buf(), 0, 12).unwrap();
+        let mut index = Index::new(&tmp_dir.path().to_path_buf(), 0, 12, 256).unwrap();
 
         index.append_position(12, 400).unwrap();
 
         assert_eq!(index.size, ENTRY_SIZE);
 
         assert_eq!(
-            fs::read(expected_file).unwrap(),
+            &fs::read(expected_file).unwrap()[..8],
             &[0, 0, 0, 12, 0, 0, 1, 144]
         );
 
@@ -239,7 +255,7 @@ mod index_tests {
         let expected_file = tmp_dir.path().join("00000000000000000000.index");
         fs::File::create(&expected_file).unwrap();
 
-        let mut index = Index::new(&tmp_dir.path().to_path_buf(), 0, 20).unwrap();
+        let mut index = Index::new(&tmp_dir.path().to_path_buf(), 0, 20, 256).unwrap();
 
         assert_eq!(
             index.find_offset(0).unwrap(),

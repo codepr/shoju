@@ -23,7 +23,7 @@ mod smoke_test {
 
 fn main() -> std::io::Result<()> {
     let mut partition = Partition::init()?;
-    smoke_test::generate_partition(&mut partition, 1200)?;
+    // smoke_test::generate_partition(&mut partition, 1200)?;
     smoke_test::replay_log(
         &mut partition,
         &[
