@@ -64,7 +64,7 @@ impl Log {
             size: log_size as usize,
             max_size,
             base_offset,
-            current_offset: record_count,
+            current_offset: base_offset + record_count,
         })
     }
 
@@ -91,8 +91,101 @@ impl Log {
     pub fn read_at(&self, offset: usize, size: usize) -> Result<&[u8]> {
         Ok(&self.mmap[offset..size])
     }
+}
 
-    pub fn get_reader(&self) -> Result<BufReader<&File>> {
-        Ok(BufReader::new(&self.file))
+#[cfg(test)]
+mod log_tests {
+
+    use super::Log;
+    use std::fs;
+    use std::path::Path;
+    use tempdir::TempDir;
+
+    #[test]
+    fn test_new() {
+        let tmp_dir = TempDir::new("test_tempdir").unwrap();
+        let expected_file = tmp_dir.path().join("00000000000000000000.log");
+
+        let log = Log::new(&tmp_dir.path().to_path_buf(), 0, 10).unwrap();
+
+        assert!(expected_file.as_path().exists());
+        assert_eq!(log.base_offset, 0);
+        assert_eq!(log.current_offset, 0);
+        assert_eq!(log.size, 0);
+        tmp_dir.close().unwrap();
+    }
+
+    #[test]
+    fn test_load_from_disk() {
+        let tmp_dir = TempDir::new("test_tempdir").unwrap();
+        let expected_file = tmp_dir.path().join("00000000000000000048.log");
+        fs::File::create(&expected_file).unwrap();
+
+        let log = Log::load_from_disk(&tmp_dir.path().to_path_buf(), 48, 10).unwrap();
+
+        assert!(expected_file.as_path().exists());
+        assert_eq!(log.base_offset, 48);
+        assert_eq!(log.current_offset, 48);
+        assert_eq!(log.size, 0);
+        tmp_dir.close().unwrap();
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_invalid_load_from_disk() {
+        Log::new(&Path::new("dont-exist-dir").to_path_buf(), 0, 10).unwrap();
+    }
+
+    #[test]
+    fn test_can_fit() {
+        let tmp_dir = TempDir::new("test_tempdir").unwrap();
+        let expected_file = tmp_dir.path().join("00000000000000000000.log");
+        fs::File::create(&expected_file).unwrap();
+
+        let log = Log::load_from_disk(&tmp_dir.path().to_path_buf(), 0, 10).unwrap();
+
+        assert!(log.can_fit(10));
+        assert!(log.can_fit(11) == false);
+        tmp_dir.close().unwrap();
+    }
+
+    #[test]
+    fn test_append_record() {
+        let tmp_dir = TempDir::new("test_tempdir").unwrap();
+        let expected_file = tmp_dir.path().join("00000000000000000000.log");
+        fs::File::create(&expected_file).unwrap();
+
+        let mut log = Log::new(&tmp_dir.path().to_path_buf(), 0, 34).unwrap();
+
+        log.append_record(b"test-record-data").unwrap();
+
+        assert_eq!(log.current_offset, 1);
+
+        assert_eq!(
+            fs::read_to_string(expected_file)
+                .unwrap()
+                .replace("\u{0}", ""),
+            String::from("test-record-data")
+        );
+
+        log.append_record(b"test-record-data-2").unwrap();
+        assert_eq!(log.current_offset, 2);
+        assert_eq!(log.size, 34);
+        tmp_dir.close().unwrap();
+    }
+
+    #[test]
+    fn test_read_at() {
+        let tmp_dir = TempDir::new("test_tempdir").unwrap();
+        let expected_file = tmp_dir.path().join("00000000000000000000.log");
+        fs::File::create(&expected_file).unwrap();
+
+        let mut log = Log::new(&tmp_dir.path().to_path_buf(), 0, 20).unwrap();
+
+        log.append_record(b"test-record-data").unwrap();
+
+        assert_eq!(log.read_at(0, 16).unwrap(), b"test-record-data");
+        assert_eq!(log.read_at(3, 8).unwrap(), b"t-rec");
+        tmp_dir.close().unwrap();
     }
 }

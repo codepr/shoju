@@ -84,12 +84,6 @@ impl Segment {
     ) -> Result<(), SegmentError> {
         let record = Record::new(self.latest_offset(), key, value.to_vec());
         if !self.log.can_fit(record.binary_size()) {
-            println!(
-                "resizing: {} {} {}",
-                self.base_offset,
-                self.latest_offset(),
-                self.size()
-            );
             Err(SegmentError::FullSegment)
         } else {
             let mut buffer = Vec::with_capacity(record.binary_size());
@@ -118,7 +112,6 @@ impl Segment {
     pub fn read_at(&mut self, offset: u64) -> std::io::Result<Record> {
         match self.index.find_offset(offset as u32) {
             Ok(FindResult::Punctual(offset_position)) => {
-                println!("{}", self.size());
                 let slice = self
                     .log
                     .read_at(offset_position.position as usize, self.size())?;
@@ -138,13 +131,17 @@ impl Segment {
                     Ok(record)
                 }
             }
-            Ok(FindResult::Ahead((offset_position, next_offset))) => {
+            Ok(FindResult::Around((offset_position, next_offset))) => {
+                let slice_end = if next_offset.position > 0 {
+                    next_offset.position as usize
+                } else {
+                    self.size()
+                };
                 let mut offset_count =
                     (offset - self.base_offset - offset_position.relative_offset as u64) + 1;
-                let slice = self.log.read_at(
-                    offset_position.position as usize,
-                    next_offset.position as usize,
-                )?;
+                let slice = self
+                    .log
+                    .read_at(offset_position.position as usize, slice_end)?;
                 // log_file.seek(SeekFrom::Start(index_position.position as u64))?;
                 let mut records: Vec<Record> = Vec::new();
                 // let mut reader = BufReader::new(&log_file);

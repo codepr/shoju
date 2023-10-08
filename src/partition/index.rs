@@ -16,9 +16,10 @@ pub struct Index {
     offset_interval: usize,
 }
 
+#[derive(Debug, PartialEq)]
 pub enum FindResult {
     Punctual(Position),
-    Ahead((Position, Position)),
+    Around((Position, Position)),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -99,6 +100,12 @@ impl Index {
     }
 
     pub fn find_offset(&self, offset: u32) -> Result<FindResult> {
+        if self.size == 0 {
+            return Ok(FindResult::Around((
+                Position::new(0, 0),
+                Position::new(0, 0),
+            )));
+        }
         let relative_offset = (offset as u64 - self.base_offset) as u32;
         let starting_offset =
             ((relative_offset as usize / self.offset_interval) * ENTRY_SIZE) as usize;
@@ -122,16 +129,13 @@ impl Index {
             }
             Err(0) => {
                 let lower_offset = &positions[0];
-                let higher_offset = &positions[if positions.len() > 0 { 1 } else { 0 }];
-                Ok(FindResult::Ahead((
+                // let higher_offset = &positions[if positions.len() > 0 { 1 } else { 0 }];
+                Ok(FindResult::Around((
                     Position::new(
                         lower_offset.relative_offset - self.offset_interval as u32,
                         0,
                     ),
-                    Position::new(
-                        higher_offset.relative_offset - self.offset_interval as u32,
-                        higher_offset.position,
-                    ),
+                    Position::new(lower_offset.relative_offset, lower_offset.position),
                 )))
             }
             Err(off) => {
@@ -140,9 +144,193 @@ impl Index {
                     Ok(FindResult::Punctual(*index_position))
                 } else {
                     let next_position = &positions[off];
-                    Ok(FindResult::Ahead((*index_position, *next_position)))
+                    Ok(FindResult::Around((*index_position, *next_position)))
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod position_tests {
+    use super::Position;
+    use std::io::BufReader;
+
+    #[test]
+    fn test_new() {
+        let idx_position = Position::new(0, 0);
+        assert_eq!(
+            idx_position,
+            Position {
+                relative_offset: 0,
+                position: 0
+            }
+        );
+    }
+
+    #[test]
+    fn test_write() {
+        let idx_position = Position::new(0, 0);
+        let mut buffer = vec![];
+        idx_position.write(&mut buffer).unwrap();
+        let mut reader = BufReader::new(&buffer[..]);
+        let expected = Position::from_binary(&mut reader).unwrap();
+        assert_eq!(idx_position, expected,);
+    }
+}
+
+#[cfg(test)]
+mod index_tests {
+
+    use super::{FindResult, Index, Position, ENTRY_SIZE};
+    use std::fs;
+    use std::path::Path;
+    use tempdir::TempDir;
+
+    #[test]
+    fn test_new() {
+        let tmp_dir = TempDir::new("test_tempdir").unwrap();
+        let expected_file = tmp_dir.path().join("00000000000000000000.index");
+
+        let index = Index::new(&tmp_dir.path().to_path_buf(), 0, 10).unwrap();
+
+        assert!(expected_file.as_path().exists());
+        assert_eq!(index.base_offset, 0);
+        assert_eq!(index.offset_interval, 10);
+        assert_eq!(index.size, 0);
+        tmp_dir.close().unwrap();
+    }
+
+    #[test]
+    fn test_load_from_disk() {
+        let tmp_dir = TempDir::new("test_tempdir").unwrap();
+        let expected_file = tmp_dir.path().join("00000000000000000048.index");
+        fs::File::create(&expected_file).unwrap();
+
+        let index = Index::load_from_disk(&tmp_dir.path().to_path_buf(), 48, 10).unwrap();
+
+        assert!(expected_file.as_path().exists());
+        assert_eq!(index.base_offset, 48);
+        assert_eq!(index.offset_interval, 10);
+        assert_eq!(index.size, 0);
+        tmp_dir.close().unwrap();
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_invalid_load_from_disk() {
+        Index::new(&Path::new("dont-exist-dir").to_path_buf(), 0, 10).unwrap();
+    }
+
+    #[test]
+    fn test_append_position() {
+        let tmp_dir = TempDir::new("test_tempdir").unwrap();
+        let expected_file = tmp_dir.path().join("00000000000000000000.index");
+        fs::File::create(&expected_file).unwrap();
+
+        let mut index = Index::new(&tmp_dir.path().to_path_buf(), 0, 12).unwrap();
+
+        index.append_position(12, 400).unwrap();
+
+        assert_eq!(index.size, ENTRY_SIZE);
+
+        assert_eq!(
+            fs::read(expected_file).unwrap(),
+            &[0, 0, 0, 12, 0, 0, 1, 144]
+        );
+
+        index.append_position(24, 1011).unwrap();
+        assert_eq!(index.size, ENTRY_SIZE * 2);
+        tmp_dir.close().unwrap();
+    }
+
+    #[test]
+    fn test_find_offset() {
+        let tmp_dir = TempDir::new("test_tempdir").unwrap();
+        let expected_file = tmp_dir.path().join("00000000000000000000.index");
+        fs::File::create(&expected_file).unwrap();
+
+        let mut index = Index::new(&tmp_dir.path().to_path_buf(), 0, 20).unwrap();
+
+        assert_eq!(
+            index.find_offset(0).unwrap(),
+            FindResult::Around((
+                Position {
+                    relative_offset: 0,
+                    position: 0
+                },
+                Position {
+                    relative_offset: 0,
+                    position: 0
+                }
+            ))
+        );
+
+        assert_eq!(
+            index.find_offset(16).unwrap(),
+            FindResult::Around((
+                Position {
+                    relative_offset: 0,
+                    position: 0
+                },
+                Position {
+                    relative_offset: 0,
+                    position: 0
+                }
+            ))
+        );
+
+        index.append_position(20, 150).unwrap();
+        index.append_position(40, 406).unwrap();
+
+        assert_eq!(
+            index.find_offset(0).unwrap(),
+            FindResult::Around((
+                Position {
+                    relative_offset: 0,
+                    position: 0
+                },
+                Position {
+                    relative_offset: 20,
+                    position: 150
+                }
+            ))
+        );
+
+        assert_eq!(
+            index.find_offset(16).unwrap(),
+            FindResult::Around((
+                Position {
+                    relative_offset: 0,
+                    position: 0
+                },
+                Position {
+                    relative_offset: 20,
+                    position: 150
+                }
+            ))
+        );
+
+        assert_eq!(
+            index.find_offset(27).unwrap(),
+            FindResult::Around((
+                Position {
+                    relative_offset: 20,
+                    position: 150
+                },
+                Position {
+                    relative_offset: 40,
+                    position: 406
+                }
+            ))
+        );
+        assert_eq!(
+            index.find_offset(40).unwrap(),
+            FindResult::Punctual(Position {
+                relative_offset: 40,
+                position: 406
+            })
+        );
+        tmp_dir.close().unwrap();
     }
 }
