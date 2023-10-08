@@ -1,8 +1,7 @@
-use crate::partition::index::{FindResult, Index};
+use crate::partition::index::Index;
 use crate::partition::log::Log;
 use crate::partition::record::Record;
 use crate::partition::LOG_MAX_SIZE;
-use std::io::BufReader;
 use std::path::Path;
 
 #[derive(Debug)]
@@ -111,43 +110,33 @@ impl Segment {
 
     pub fn read_at(&mut self, offset: u64) -> std::io::Result<Record> {
         match self.index.find_offset(offset as u32) {
-            Ok(FindResult::Punctual(offset_position)) => {
-                let slice = self
-                    .log
-                    .read_at(offset_position.position as usize, self.size())?;
-                let mut reader = BufReader::new(slice);
-                let mut record = Record::from_binary(&mut reader)?;
-                if record.offset == offset {
-                    Ok(record)
+            Ok(offset_range) => {
+                let begin_relative_offset = offset_range.begin.relative_offset;
+                let begin_position = offset_range.begin.position;
+                let begin = if begin_relative_offset as u64 > (offset - self.base_offset) {
+                    0
                 } else {
-                    let mut remaining_bytes =
-                        self.size() - offset_position.position as usize - record.binary_size();
-                    let mut stop = false;
-                    while remaining_bytes > 0 && stop == false {
-                        record = Record::from_binary(&mut reader)?;
-                        remaining_bytes -= record.binary_size();
-                        stop = record.offset == offset;
-                    }
-                    Ok(record)
-                }
-            }
-            Ok(FindResult::Around((offset_position, next_offset))) => {
-                let slice_end = if next_offset.position > 0 {
-                    next_offset.position as usize
-                } else {
-                    self.size()
+                    begin_position as usize
                 };
-                let mut offset_count =
-                    (offset - self.base_offset - offset_position.relative_offset as u64) + 1;
-                let slice = self
-                    .log
-                    .read_at(offset_position.position as usize, slice_end)?;
-                // log_file.seek(SeekFrom::Start(index_position.position as u64))?;
+                let end = if offset_range.begin == offset_range.end {
+                    self.size()
+                } else {
+                    offset_range.end.position as usize
+                };
+                let mut slice = self.log.read_at(begin, end)?;
+
+                let mut offset_count = match offset {
+                    0 => 1,
+                    lesser if lesser < self.base_offset + begin_relative_offset as u64 => {
+                        lesser - self.base_offset + 1
+                    }
+                    equal if equal == self.base_offset + begin_relative_offset as u64 => 1,
+                    greater => (greater - self.base_offset - begin_relative_offset as u64) + 1,
+                };
+
                 let mut records: Vec<Record> = Vec::new();
-                // let mut reader = BufReader::new(&log_file);
-                let mut reader = BufReader::new(slice);
                 while offset_count != 0 {
-                    let r = Record::from_binary(&mut reader)?;
+                    let r = Record::from_binary(&mut slice)?;
                     records.push(r);
                     offset_count -= 1;
                 }

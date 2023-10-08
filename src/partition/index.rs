@@ -1,6 +1,5 @@
 use byteorder::{NetworkEndian, ReadBytesExt, WriteBytesExt};
 use memmap2::MmapOptions;
-use std::cmp::Ordering;
 use std::fs::{File, OpenOptions};
 use std::io::BufWriter;
 use std::io::{Read, Result, Write};
@@ -14,12 +13,6 @@ pub struct Index {
     size: usize,
     base_offset: u64,
     offset_interval: usize,
-}
-
-#[derive(Debug, PartialEq)]
-pub enum FindResult {
-    Punctual(Position),
-    Around((Position, Position)),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -48,6 +41,18 @@ impl Position {
             relative_offset,
             position,
         })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OffsetRange {
+    pub begin: Position,
+    pub end: Position,
+}
+
+impl OffsetRange {
+    pub fn new(begin: Position, end: Position) -> Self {
+        Self { begin, end }
     }
 }
 
@@ -99,12 +104,9 @@ impl Index {
         Ok(())
     }
 
-    pub fn find_offset(&self, offset: u32) -> Result<FindResult> {
+    pub fn find_offset(&self, offset: u32) -> Result<OffsetRange> {
         if self.size == 0 {
-            return Ok(FindResult::Around((
-                Position::new(0, 0),
-                Position::new(0, 0),
-            )));
+            return Ok(OffsetRange::new(Position::new(0, 0), Position::new(0, 0)));
         }
         let relative_offset = (offset as u64 - self.base_offset) as u32;
         let starting_offset =
@@ -114,38 +116,25 @@ impl Index {
         } else {
             starting_offset - ENTRY_SIZE
         };
+        let end_offset = if self.size >= (starting_offset + (ENTRY_SIZE * 2)) {
+            starting_offset + (ENTRY_SIZE * 2)
+        } else {
+            self.size
+        };
+
         let mmap = unsafe { MmapOptions::new().map(&self.file)? };
-        let positions: Vec<Position> = mmap[starting_offset..]
-            .chunks(8)
+        let positions: Vec<Position> = mmap[starting_offset..end_offset]
+            .chunks(ENTRY_SIZE)
             .map(|mut c| Position::from_binary(&mut c).unwrap())
             .collect();
 
-        let position = positions
-            .binary_search_by(|p| p.relative_offset.cmp(&relative_offset).then(Ordering::Less));
-        match position {
-            Ok(pos) => {
-                let index_position = &positions[pos];
-                Ok(FindResult::Punctual(*index_position))
-            }
-            Err(0) => {
-                let lower_offset = &positions[0];
-                // let higher_offset = &positions[if positions.len() > 0 { 1 } else { 0 }];
-                Ok(FindResult::Around((
-                    Position::new(
-                        lower_offset.relative_offset - self.offset_interval as u32,
-                        0,
-                    ),
-                    Position::new(lower_offset.relative_offset, lower_offset.position),
-                )))
-            }
-            Err(off) => {
-                let index_position = &positions[off - 1];
-                if relative_offset % self.offset_interval as u32 == 0 || off == positions.len() {
-                    Ok(FindResult::Punctual(*index_position))
-                } else {
-                    let next_position = &positions[off];
-                    Ok(FindResult::Around((*index_position, *next_position)))
-                }
+        if offset < positions[0].relative_offset {
+            Ok(OffsetRange::new(Position::new(0, 0), positions[0]))
+        } else {
+            if positions.len() > 1 {
+                Ok(OffsetRange::new(positions[0], positions[1]))
+            } else {
+                Ok(OffsetRange::new(positions[0], positions[0].clone()))
             }
         }
     }
@@ -182,7 +171,7 @@ mod position_tests {
 #[cfg(test)]
 mod index_tests {
 
-    use super::{FindResult, Index, Position, ENTRY_SIZE};
+    use super::{Index, OffsetRange, Position, ENTRY_SIZE};
     use std::fs;
     use std::path::Path;
     use tempdir::TempDir;
@@ -254,30 +243,30 @@ mod index_tests {
 
         assert_eq!(
             index.find_offset(0).unwrap(),
-            FindResult::Around((
-                Position {
+            OffsetRange {
+                begin: Position {
                     relative_offset: 0,
                     position: 0
                 },
-                Position {
+                end: Position {
                     relative_offset: 0,
                     position: 0
                 }
-            ))
+            }
         );
 
         assert_eq!(
             index.find_offset(16).unwrap(),
-            FindResult::Around((
-                Position {
+            OffsetRange {
+                begin: Position {
                     relative_offset: 0,
                     position: 0
                 },
-                Position {
+                end: Position {
                     relative_offset: 0,
                     position: 0
                 }
-            ))
+            }
         );
 
         index.append_position(20, 150).unwrap();
@@ -285,51 +274,57 @@ mod index_tests {
 
         assert_eq!(
             index.find_offset(0).unwrap(),
-            FindResult::Around((
-                Position {
+            OffsetRange {
+                begin: Position {
                     relative_offset: 0,
                     position: 0
                 },
-                Position {
+                end: Position {
                     relative_offset: 20,
                     position: 150
                 }
-            ))
+            }
         );
 
         assert_eq!(
             index.find_offset(16).unwrap(),
-            FindResult::Around((
-                Position {
+            OffsetRange {
+                begin: Position {
                     relative_offset: 0,
                     position: 0
                 },
-                Position {
+                end: Position {
                     relative_offset: 20,
                     position: 150
                 }
-            ))
+            }
         );
 
         assert_eq!(
             index.find_offset(27).unwrap(),
-            FindResult::Around((
-                Position {
+            OffsetRange {
+                begin: Position {
                     relative_offset: 20,
                     position: 150
                 },
-                Position {
+                end: Position {
                     relative_offset: 40,
                     position: 406
                 }
-            ))
+            }
         );
         assert_eq!(
             index.find_offset(40).unwrap(),
-            FindResult::Punctual(Position {
-                relative_offset: 40,
-                position: 406
-            })
+            OffsetRange {
+                begin: Position {
+                    relative_offset: 40,
+                    position: 406
+                },
+                end: Position {
+                    relative_offset: 40,
+                    position: 406
+                }
+            }
         );
         tmp_dir.close().unwrap();
     }
