@@ -2,14 +2,13 @@ use shoju::partition::Partition;
 
 mod smoke_test {
     use shoju::partition::Partition;
-    // use shoju::log::partition::Partition;
     pub fn generate_partition(partition: &mut Partition, n: i32) -> std::io::Result<()> {
         for _i in 0..n {
             partition
                 .append_record(Some("key".into()), &[0, 0, 1, 0])
                 .expect("Error writing to disk");
         }
-        Ok(())
+        partition.flush()
     }
 
     pub fn replay_log(partition: &mut Partition, offsets: &[u64]) {
@@ -24,7 +23,7 @@ mod smoke_test {
 
 fn main() -> std::io::Result<()> {
     let mut partition = Partition::init()?;
-    // smoke_test::generate_partition(&mut partition, 1200)?;
+    smoke_test::generate_partition(&mut partition, 1200)?;
     smoke_test::replay_log(
         &mut partition,
         &[

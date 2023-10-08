@@ -76,6 +76,11 @@ impl Segment {
         self.active = false;
     }
 
+    pub fn flush(&mut self) -> std::io::Result<()> {
+        self.log.flush()?;
+        self.index.flush()
+    }
+
     pub fn append_record(
         &mut self,
         key: Option<Vec<u8>>,
@@ -86,7 +91,6 @@ impl Segment {
             Err(SegmentError::FullSegment)
         } else {
             let mut buffer = Vec::with_capacity(record.binary_size());
-            // let mut writer = BufWriter::new(vec![0u8; record.binary_size()]);
             record
                 .write(&mut buffer)
                 .map_err(|err| SegmentError::Io(err))?;
@@ -98,9 +102,6 @@ impl Segment {
                             .map_err(|err| SegmentError::Io(err))?;
                         self.prev_offset = last_offset;
                     }
-                    self.log.flush().map_err(|err| SegmentError::Io(err))?;
-                    self.index.flush().map_err(|err| SegmentError::Io(err))?;
-
                     Ok(())
                 }
                 Err(e) => Err(SegmentError::Io(e)),

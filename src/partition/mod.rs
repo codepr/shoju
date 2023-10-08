@@ -61,6 +61,10 @@ impl Partition {
         }
     }
 
+    pub fn flush(&mut self) -> Result<()> {
+        self.active_segment().flush()
+    }
+
     pub fn append_record(&mut self, key: Option<Vec<u8>>, value: &[u8]) -> Result<()> {
         match self.active_segment().append_record(key.clone(), value) {
             Ok(()) => Ok(()),
