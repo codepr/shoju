@@ -1,5 +1,6 @@
 pub mod index;
 pub mod log;
+mod pager;
 pub mod record;
 pub mod segment;
 
@@ -46,7 +47,6 @@ impl Partition {
             paths.sort();
             let active_segment_index = paths.len();
 
-            // let active_segment_log = paths.into_iter().last().unwrap();
             let segments: Vec<Segment> = paths
                 .into_iter()
                 .map(|name| {
